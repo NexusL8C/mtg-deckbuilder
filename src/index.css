@@ -54,6 +54,13 @@ body {
   margin: 0;
 }
 
+button,
+input,
+select,
+textarea {
+  box-sizing: border-box;
+}
+
 #root {
   width: 1126px;
   max-width: 100%;

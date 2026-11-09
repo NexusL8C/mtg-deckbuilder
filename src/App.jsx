@@ -83,6 +83,9 @@ const BASIC_LAND_NAMES = new Set([
   'Snow-Covered Mountain', 'Snow-Covered Forest'
 ]);
 
+const FALLBACK_CARD_IMAGE =
+  'https://cards.scryfall.io/large/front/0/c/0c082aa8-bf7f-47f2-baf8-43ad253fd7d7.jpg';
+
 // Helper to extract front/back image URIs safely from Scryfall card objects
 function getCardImage(card, faceIndex = 0) {
   if (!card) return '';
@@ -95,7 +98,7 @@ function getCardImage(card, faceIndex = 0) {
   if (card.card_faces && card.card_faces[0]?.image_uris?.normal) {
     return card.card_faces[0].image_uris.normal;
   }
-  return 'https://cards.scryfall.io/large/front/0/c/0c082aa8-bf7f-47f2-baf8-43ad253fd7d7.jpg';
+  return FALLBACK_CARD_IMAGE;
 }
 
 function isDoubleFaced(card) {
@@ -886,8 +889,58 @@ export default function App() {
     }
     return INITIAL_DECKS;
   });
+  const [persistenceReady, setPersistenceReady] = useState(false);
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
 
   const [activeDeckId, setActiveDeckId] = useState(() => decks[0]?.id || INITIAL_DECKS[0].id);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    fetch('/api/me')
+      .then((response) => {
+        if (!response.ok) throw new Error(`Auth API returned ${response.status}`);
+        return response.json();
+      })
+      .then(({ user: currentUser }) => {
+        if (cancelled) return;
+        setUser(currentUser);
+        if (!currentUser) return;
+
+        return fetch('/api/decks')
+          .then((response) => {
+            if (!response.ok) throw new Error(`Deck API returned ${response.status}`);
+            return response.json();
+          })
+          .then((serverDecks) => {
+            if (cancelled) return;
+            if (Array.isArray(serverDecks) && serverDecks.length > 0) {
+              setDecks(serverDecks);
+              setActiveDeckId((currentId) =>
+                serverDecks.some((deck) => deck.id === currentId)
+                  ? currentId
+                  : serverDecks[0].id
+              );
+            }
+          });
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          console.warn('Authentication API unavailable; using local browser storage:', error);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAuthLoading(false);
+          setPersistenceReady(true);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     try {
@@ -896,6 +949,30 @@ export default function App() {
       console.error('Failed to save decks to localStorage:', e);
     }
   }, [decks]);
+
+  useEffect(() => {
+    if (!persistenceReady || !user) return;
+
+    const saveToDatabase = async () => {
+      for (const deck of decks) {
+        try {
+          const response = await fetch(`/api/decks/${encodeURIComponent(deck.id)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(deck)
+          });
+          if (!response.ok) {
+            throw new Error(`Deck API returned ${response.status}`);
+          }
+        } catch (error) {
+          console.warn(`Could not save "${deck.name}" to the database:`, error);
+          return;
+        }
+      }
+    };
+
+    saveToDatabase();
+  }, [decks, persistenceReady, user]);
 
   const activeDeck = useMemo(
     () => decks.find((d) => d.id === activeDeckId) || decks[0],
@@ -938,6 +1015,29 @@ export default function App() {
   // Show temporary notification toast
   const triggerToast = useCallback((message, type = 'info') => {
     setToast({ message, type });
+  }, []);
+
+  const repairCardImage = useCallback(async (card, event, faceIndex = 0) => {
+    const imageElement = event.currentTarget;
+    imageElement.src = FALLBACK_CARD_IMAGE;
+
+    try {
+      const response = await fetch(
+        `https://api.scryfall.com/cards/named?exact=${encodeURIComponent(card.name)}`
+      );
+      if (!response.ok) throw new Error(`Scryfall image lookup failed: ${response.status}`);
+
+      const repairedCard = await response.json();
+      const repairedImage =
+        repairedCard.card_faces?.[faceIndex]?.image_uris?.normal ||
+        repairedCard.image_uris?.normal ||
+        repairedCard.card_faces?.[0]?.image_uris?.normal;
+
+      if (!repairedImage) throw new Error(`No image returned for ${card.name}`);
+      imageElement.src = repairedImage;
+    } catch (error) {
+      console.error(`Failed to repair image for ${card.name}:`, error);
+    }
   }, []);
 
   useEffect(() => {
@@ -1438,7 +1538,7 @@ export default function App() {
       {/* TOP NAVIGATION BAR                                                 */}
       {/* ================================================================== */}
       <header className="sticky top-0 z-30 bg-slate-950/90 backdrop-blur-md border-b border-slate-800/80 px-4 py-2.5">
-        <div className="max-w-[1600px] mx-auto flex flex-wrap items-center justify-between gap-3">
+        <div className="max-w-[1600px] mx-auto flex flex-wrap items-center justify-between gap-3 min-w-0">
           {/* Brand Logo & School Project Badge */}
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 via-orange-600 to-violet-700 p-0.5 shadow-lg shadow-amber-500/10">
@@ -1462,13 +1562,13 @@ export default function App() {
           </div>
 
           {/* Deck Selector & Format Switcher */}
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="flex items-center bg-slate-900 border border-slate-800 rounded-lg p-1">
+          <div className="flex flex-wrap items-center justify-end gap-2 min-w-0">
+            <div className="flex items-center bg-slate-900 border border-slate-800 rounded-lg p-1 min-w-0">
               <Layers className="w-4 h-4 text-amber-400 ml-2 mr-1.5 shrink-0" />
               <select
                 value={activeDeck.id}
                 onChange={(e) => setActiveDeckId(e.target.value)}
-                className="bg-transparent text-sm font-semibold text-slate-100 pr-6 py-1 focus:outline-none cursor-pointer"
+                className="bg-transparent text-sm font-semibold text-slate-100 pr-6 py-1 focus:outline-none cursor-pointer max-w-[18rem] truncate"
                 aria-label="Select Active Deck"
               >
                 {decks.map((d) => (
@@ -1481,7 +1581,7 @@ export default function App() {
 
             <button
               onClick={() => setShowNewDeckModal(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 transition"
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 transition"
             >
               <Plus className="w-3.5 h-3.5" />
               New Deck
@@ -1492,7 +1592,7 @@ export default function App() {
                 startNewOpeningHand(0);
                 setShowPlaytestModal(true);
               }}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-violet-600/20 hover:bg-violet-600/30 text-violet-200 border border-violet-500/30 transition"
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 bg-violet-600/20 hover:bg-violet-600/30 text-violet-200 border border-violet-500/30 transition"
             >
               <Shuffle className="w-3.5 h-3.5 text-violet-400" />
               Test Hand
@@ -1500,7 +1600,7 @@ export default function App() {
 
             <button
               onClick={() => setShowImportExportModal(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-700 transition"
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-700 transition"
             >
               <ArrowRightLeft className="w-3.5 h-3.5 text-slate-400" />
               Import / Export
@@ -1508,12 +1608,55 @@ export default function App() {
 
             <button
               onClick={() => setShowArchitectureModal(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 transition"
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 transition"
               title="View Full-Stack School Project Architecture"
             >
               <Database className="w-3.5 h-3.5" />
               System Stack
             </button>
+
+            {authLoading ? (
+              <span className="text-xs text-slate-500 px-2">Checking account...</span>
+            ) : user ? (
+              <div className="inline-flex items-center gap-2 rounded-lg bg-slate-900 border border-slate-700 px-2 py-1">
+                {user.avatar_url && (
+                  <img
+                    src={user.avatar_url}
+                    alt=""
+                    className="w-5 h-5 rounded-full"
+                  />
+                )}
+                <span className="text-xs font-semibold text-slate-200 max-w-[9rem] truncate">
+                  {user.display_name}
+                </span>
+                <button
+                  onClick={async () => {
+                    await fetch('/api/auth/logout', { method: 'POST' });
+                    setUser(null);
+                    setPersistenceReady(false);
+                    triggerToast('Signed out.');
+                  }}
+                  className="text-[11px] font-bold text-slate-400 hover:text-slate-100 whitespace-nowrap"
+                >
+                  Sign out
+                </button>
+              </div>
+            ) : (
+              <div className="inline-flex items-center gap-1">
+                <a
+                  href="/api/auth/github"
+                  className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700"
+                >
+                  GitHub
+                </a>
+                <a
+                  href="/api/auth/google"
+                  className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap bg-amber-500 hover:bg-amber-400 text-slate-950"
+                >
+                  Google
+                </a>
+              </div>
+            )}
           </div>
         </div>
       </header>
@@ -1543,18 +1686,18 @@ export default function App() {
       {/* ================================================================== */}
       {/* MAIN 3-COLUMN WORKSPACE                                            */}
       {/* ================================================================== */}
-      <main className="flex-1 max-w-[1600px] w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-4 p-4">
+      <main className="flex-1 max-w-[1600px] w-full mx-auto grid grid-cols-1 lg:grid-cols-[minmax(260px,300px)_minmax(0,1fr)_minmax(280px,320px)] gap-4 p-4 min-w-0">
         {/* ---------------------------------------------------------------- */}
         {/* LEFT COLUMN (3 cols): LIVE SCRYFALL CARD SEARCH & FILTERS        */}
         {/* ---------------------------------------------------------------- */}
-        <section className="lg:col-span-3 bg-slate-900/70 border border-slate-800/90 rounded-2xl flex flex-col overflow-hidden max-h-[88vh]">
-          <div className="p-3.5 border-b border-slate-800 space-y-3 bg-slate-900/90">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+        <section className="h-[600px] max-h-[600px] self-start min-h-0 bg-slate-900/70 border border-slate-800/90 rounded-2xl flex flex-col overflow-hidden min-w-0">
+          <div className="p-3.5 border-b border-slate-800 space-y-3 bg-slate-900/90 min-w-0">
+            <div className="flex items-center justify-between gap-2 min-w-0">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5 min-w-0">
                 <Search className="w-3.5 h-3.5 text-amber-400" />
                 Scryfall Card Database
               </span>
-              <span className="text-[10px] text-slate-400 font-medium px-2 py-0.5 rounded bg-slate-800">
+              <span className="text-[10px] text-slate-400 font-medium px-2 py-0.5 rounded bg-slate-800 shrink-0 max-w-[9rem] truncate">
                 {isSearching ? 'Querying API...' : searchSource}
               </span>
             </div>
@@ -1636,7 +1779,7 @@ export default function App() {
           </div>
 
           {/* Scrollable Card Results List */}
-          <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
+          <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2.5">
             {searchResults.length === 0 ? (
               <div className="text-center py-12 px-4 text-slate-400 space-y-2">
                 <Search className="w-8 h-8 mx-auto text-slate-600" />
@@ -1673,6 +1816,7 @@ export default function App() {
                         src={imgUrl}
                         alt={card.name}
                         loading="lazy"
+                        onError={(e) => repairCardImage(card, e, faceIdx)}
                         className="w-full h-full object-cover object-top group-hover:scale-105 transition duration-300"
                       />
                       {canFlip && (
@@ -1714,10 +1858,10 @@ export default function App() {
                             : '—'}
                         </span>
 
-                        <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
                           <button
                             onClick={() => addCardToDeck(card, 'mainboard')}
-                            className="px-2 py-1 rounded-md bg-amber-500/20 hover:bg-amber-500 text-amber-300 hover:text-slate-950 text-[11px] font-bold border border-amber-500/30 transition"
+                            className="inline-flex w-[68px] h-[26px] items-center justify-center whitespace-nowrap shrink-0 px-1 leading-none rounded-md bg-amber-500/20 hover:bg-amber-500 text-amber-300 hover:text-slate-950 text-[10px] font-bold border border-amber-500/30 transition"
                             title="Add to Mainboard"
                           >
                             + Main
@@ -1726,7 +1870,7 @@ export default function App() {
                           {activeDeck.format === 'commander' && isLegendary ? (
                             <button
                               onClick={() => addCardToDeck(card, 'commander')}
-                              className="px-1.5 py-1 rounded-md bg-violet-500/20 hover:bg-violet-500 text-violet-300 hover:text-white text-[11px] font-bold border border-violet-500/30 transition flex items-center gap-0.5"
+                              className="inline-flex w-[62px] h-[26px] items-center justify-center whitespace-nowrap shrink-0 px-1 leading-none rounded-md bg-violet-500/20 hover:bg-violet-500 text-violet-300 hover:text-white text-[10px] font-bold border border-violet-500/30 transition"
                               title="Set as Deck Commander"
                             >
                               <Crown className="w-3 h-3" />
@@ -1754,7 +1898,7 @@ export default function App() {
         {/* ---------------------------------------------------------------- */}
         {/* CENTER WORKSPACE (6 cols): DECK HEADER, STATUS & VISUAL STACKS   */}
         {/* ---------------------------------------------------------------- */}
-        <section className="lg:col-span-6 flex flex-col gap-4">
+        <section className="min-w-0 flex flex-col gap-4">
           {/* Deck Header Card */}
           <div className="bg-gradient-to-br from-slate-900 via-slate-900 to-indigo-950/40 border border-slate-800 rounded-2xl p-4 shadow-xl">
             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1966,6 +2110,9 @@ export default function App() {
                                   <img
                                     src={getCardImage(card, cardFaceMap[card.id] || 0)}
                                     alt={card.name}
+                                    onError={(e) =>
+                                      repairCardImage(card, e, cardFaceMap[card.id] || 0)
+                                    }
                                     className="w-9 h-12 rounded-md object-cover object-top border border-slate-700 shrink-0"
                                   />
                                   <div className="min-w-0">
@@ -2139,7 +2286,7 @@ export default function App() {
         {/* ---------------------------------------------------------------- */}
         {/* RIGHT PANEL (3 cols): CARD INSPECTOR, ANALYTICS & RULES CHECKLIST */}
         {/* ---------------------------------------------------------------- */}
-        <aside className="lg:col-span-3 flex flex-col gap-4">
+        <aside className="min-w-0 flex flex-col gap-4">
           {/* Card Inspector Spotlight */}
           <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-3.5 space-y-3">
             <div className="flex items-center justify-between">
@@ -2167,6 +2314,13 @@ export default function App() {
                       cardFaceMap[inspectedCard.id] || 0
                     )}
                     alt={inspectedCard.name}
+                    onError={(e) =>
+                      repairCardImage(
+                        inspectedCard,
+                        e,
+                        cardFaceMap[inspectedCard.id] || 0
+                      )
+                    }
                     className="w-full h-auto block"
                   />
                 </div>
@@ -2413,6 +2567,7 @@ export default function App() {
                   <img
                     src={getCardImage(card)}
                     alt={card.name}
+                    onError={(e) => repairCardImage(card, e)}
                     className="w-full h-auto rounded-lg"
                   />
                   <span className="text-[11px] font-bold text-slate-200 mt-1.5 truncate w-full">
