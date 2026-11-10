@@ -915,12 +915,17 @@ export default function App() {
           })
           .then((serverDecks) => {
             if (cancelled) return;
-            if (Array.isArray(serverDecks) && serverDecks.length > 0) {
-              setDecks(serverDecks);
+            if (Array.isArray(serverDecks)) {
+              const serverDeckIds = new Set(serverDecks.map((deck) => deck.id));
+              const accountDecks = [
+                ...serverDecks,
+                ...INITIAL_DECKS.filter((deck) => !serverDeckIds.has(deck.id))
+              ];
+              setDecks(accountDecks);
               setActiveDeckId((currentId) =>
-                serverDecks.some((deck) => deck.id === currentId)
+                accountDecks.some((deck) => deck.id === currentId)
                   ? currentId
-                  : serverDecks[0].id
+                  : accountDecks[0]?.id || INITIAL_DECKS[0].id
               );
             }
           });
@@ -950,20 +955,24 @@ export default function App() {
     }
   }, [decks]);
 
+  const persistDeck = useCallback(async (deck) => {
+    const response = await fetch(`/api/decks/${encodeURIComponent(deck.id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(deck)
+    });
+    if (!response.ok) {
+      throw new Error(`Deck API returned ${response.status}`);
+    }
+  }, []);
+
   useEffect(() => {
     if (!persistenceReady || !user) return;
 
     const saveToDatabase = async () => {
       for (const deck of decks) {
         try {
-          const response = await fetch(`/api/decks/${encodeURIComponent(deck.id)}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(deck)
-          });
-          if (!response.ok) {
-            throw new Error(`Deck API returned ${response.status}`);
-          }
+          await persistDeck(deck);
         } catch (error) {
           console.warn(`Could not save "${deck.name}" to the database:`, error);
           return;
@@ -972,7 +981,7 @@ export default function App() {
     };
 
     saveToDatabase();
-  }, [decks, persistenceReady, user]);
+  }, [decks, persistenceReady, user, persistDeck]);
 
   const activeDeck = useMemo(
     () => decks.find((d) => d.id === activeDeckId) || decks[0],
@@ -1243,7 +1252,7 @@ export default function App() {
     triggerToast(`Format switched to ${newFormat.toUpperCase()} — rules re-validated!`);
   };
 
-  const handleCreateDeck = (e) => {
+  const handleCreateDeck = async (e) => {
     e.preventDefault();
     const title = newDeckName.trim() || 'Untitled Arcane Brew';
     const created = {
@@ -1261,6 +1270,15 @@ export default function App() {
     setNewDeckName('');
     setShowNewDeckModal(false);
     triggerToast(`Created new ${newDeckFormat.toUpperCase()} deck "${title}"`);
+
+    if (user && persistenceReady) {
+      try {
+        await persistDeck(created);
+      } catch (error) {
+        console.error('Failed to save newly created deck:', error);
+        triggerToast(`Could not save "${title}" to your account.`, 'error');
+      }
+    }
   };
 
   const handleResetDemoDecks = () => {
@@ -1634,6 +1652,9 @@ export default function App() {
                     await fetch('/api/auth/logout', { method: 'POST' });
                     setUser(null);
                     setPersistenceReady(false);
+                    setDecks(INITIAL_DECKS);
+                    setActiveDeckId(INITIAL_DECKS[0].id);
+                    localStorage.setItem(STORAGE_KEY, JSON.stringify(INITIAL_DECKS));
                     triggerToast('Signed out.');
                   }}
                   className="text-[11px] font-bold text-slate-400 hover:text-slate-100 whitespace-nowrap"
