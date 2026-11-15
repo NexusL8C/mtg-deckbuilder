@@ -1,172 +1,118 @@
 # ArcaneForge MTG Deckbuilder
 
-ArcaneForge is a React/Vite Magic: The Gathering deckbuilder with Scryfall search, deck analytics, format validation, opening-hand simulation, and MTG Arena decklist import/export.
+ArcaneForge is a React/Vite Magic: The Gathering deckbuilder with Scryfall search, deck analytics, format validation, opening-hand simulation, MTG Arena decklist import/export, and cloud database persistence on Neon PostgreSQL.
 
-## Storage model
+## Storage Architecture (PostgreSQL on Neon)
 
-The application supports a Node.js + PostgreSQL persistence layer:
+The application uses a serverless cloud PostgreSQL database hosted on **[Neon](https://neon.tech/)**, connected through Node.js using the `pg` driver:
 
-- `cards` stores the Scryfall card JSON for cards used in saved decks.
-- `decks` stores deck metadata and format.
-- `deck_cards` stores card quantities and zones (`commander`, `mainboard`, or `sideboard`).
-- Browser `localStorage` remains an offline fallback if the API or database is unavailable.
-- GitHub and Google OAuth sessions are stored in PostgreSQL, and deck records are scoped to the signed-in user.
+1. **`users`** — player accounts and profiles. Includes a built-in demo student profile for immediate out-of-the-box presentation and grading.
+2. **`cards`** — local Scryfall card cache combining 3rd Normal Form (3NF) relational columns (`scryfall_id`, `name`, `mana_cost`, `cmc`, `type_line`, `color_identity`) with `JSONB` for artwork, prices, and format legalities. Stored once regardless of how many decks include the card.
+3. **`decks`** — deck metadata (`id`, `user_id`, `name`, `format`, `description`, `commander_card_id`, timestamps).
+4. **`deck_cards`** — many-to-many relational join table (`deck_id`, `card_id`, `quantity`, `zone`) with `ON DELETE CASCADE`.
+5. **Offline Fallback** — if `DATABASE_URL` is not yet configured, the backend automatically falls back to local file storage and the browser uses `localStorage`.
 
-Search results still come from Scryfall. Cards are cached in PostgreSQL when they are added to or imported into a deck.
+### Why Neon (Cloud PostgreSQL) Instead of Local Postgres?
 
-## Dependencies
+- **Zero Local Configuration:** No Windows service installation, no forgotten passwords, and no port 5432 conflicts.
+- **Single Connection String (`DATABASE_URL`):** Works instantly across all teammate laptops and live deployments.
+- **Automatic Table Creation:** When the backend starts, it runs `CREATE TABLE IF NOT EXISTS` for all 4 tables automatically.
+- **Online Table Viewer & SQL Console:** Great for classroom presentations—save a deck in the browser and watch relational rows appear in Neon in real time.
 
-### Runtime dependencies
+---
 
-These packages are installed by `npm install`:
+## 🚀 Quick Setup (3 Steps)
 
-- **React** and **React DOM** — build and render the frontend interface.
-- **Lucide React** — provide interface icons.
-- **Recharts** — render deck analytics charts.
-- **Express** — run the Node.js HTTP API.
-- **pg** — connect the API to PostgreSQL.
-- **Passport**, **passport-github2**, and **passport-google-oauth20** — handle GitHub and Google OAuth.
-- **express-session** and **connect-pg-simple** — provide secure HTTP-only login sessions persisted in PostgreSQL.
-- **dotenv** — load local environment configuration.
+### Step 1: Create Free Database on Neon (30 seconds)
+1. Sign up / log in with your GitHub account at **[neon.tech](https://neon.tech/)** (free, no credit card required).
+2. Click **Create Project** and name it `mtg-deckbuilder`.
+3. Copy the **Connection String** (`postgresql://neondb_owner:...`) displayed on your dashboard.
 
-### Development dependencies
-
-- **Vite** — frontend development server and production bundler.
-- **`@vitejs/plugin-react`** — React support for Vite.
-- **Oxlint** — JavaScript and React linting.
-- **`@types/react`** and **`@types/react-dom`** — React type definitions used by tooling and editor support.
-
-### External services and software
-
-- **Node.js LTS** — runs Vite and the Node.js API.
-- **PostgreSQL** — stores decks, deck entries, and cached Scryfall card data.
-- **Scryfall API** — provides card search and card metadata.
-- **Scryfall card CDN** — serves card artwork.
-- **Modern web browser** — required for the React application and browser `localStorage` fallback.
-
-The exact npm versions are defined in [`package.json`](./package.json), with the resolved dependency tree recorded in [`package-lock.json`](./package-lock.json).
-
-## Local setup
-
-Install dependencies:
-
-```bash
-npm install
-```
-
-Create a PostgreSQL database, copy `.env.example` to `.env`, and set `DATABASE_URL`:
-
-```text
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/mtg_deckbuilder
-PORT=3001
-```
-
-Apply the schema:
-
-```bash
-psql "$DATABASE_URL" -f server/schema.sql
-```
-
-Run the API and frontend together:
-
-```bash
-npm start
-```
-
-Vite proxies `/api` requests to `http://localhost:3001` during development.
-The `API` and `WEB` processes share one terminal with labeled output. Press `Ctrl+C` to stop both services.
-
-## Windows setup
-
-The following steps use PowerShell.
-
-1. Install the current Node.js LTS release and PostgreSQL for Windows. During PostgreSQL installation, remember the password assigned to the `postgres` user (usually "postgres") and keep the default port `5432` unless you have changed it.
-
-2. Open PowerShell in the repository folder and install the JavaScript dependencies:
-
-```powershell
-npm install
-```
-
-3. Create the application database. The PostgreSQL command-line tools must be available on your `PATH`; if `psql` is not recognized, run these commands from the PostgreSQL `bin` folder, commonly `C:\Program Files\PostgreSQL\<version>\bin`, or add that folder to your Windows `PATH`.
-
-```powershell
-psql -U postgres -h localhost -p 5432
-```
-
-At the `postgres=#` prompt, run:
-
-```sql
-CREATE DATABASE mtg_deckbuilder;
-\q
-```
-
-4. Create the local environment file:
+### Step 2: Configure Environment
+Copy `.env.example` to `.env` in the project root (or inside `backend/.env`):
 
 ```powershell
 Copy-Item .env.example .env
-notepad .env
 ```
 
-Set `DATABASE_URL` in `.env` to match the PostgreSQL password:
+Open `.env` and paste your Neon connection string:
 
-```text
-DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@localhost:5432/mtg_deckbuilder
+```env
+DATABASE_URL="postgresql://neondb_owner:YOUR_PASSWORD@ep-xyz-pooler.us-east-2.aws.neon.tech/neondb?sslmode=require"
 PORT=3001
 ```
 
-The API automatically loads `.env` when started with `npm run api`; do not commit this file.
-
-If the password contains characters such as `@`, `:`, `/`, or `#`, URL-encode those characters in `DATABASE_URL`.
-
-### OAuth provider setup
-
-Authentication supports GitHub and Google OAuth. Configure either or both providers using the variables in `.env.example`:
-
-- **GitHub:** create an OAuth App in GitHub Developer Settings and set the authorization callback URL to `http://localhost:3001/api/auth/github/callback`.
-- **Google:** create an OAuth client in Google Cloud Console, choose Web application, and add `http://localhost:3001/api/auth/google/callback` as an authorized redirect URI.
-
-Put each provider's client ID and secret in `.env`. The API exposes login links at `/api/auth/github` and `/api/auth/google`; it never stores provider passwords.
-
-Generate a strong session secret in PowerShell:
+### Step 3: Install & Start
+In your terminal, run:
 
 ```powershell
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+npm.cmd install
+npm.cmd start
 ```
 
-After adding OAuth variables, restart `npm start`. The frontend displays GitHub and Google login buttons, and deck API requests require an authenticated session.
+That's it!
+- The backend automatically initializes all tables in Neon on boot (`users`, `cards`, `decks`, `deck_cards`).
+- Vite dev server launches at `http://localhost:5173`.
+- Backend API runs at `http://localhost:3001` with `/api` proxied seamlessly.
 
-5. Apply the database schema:
+---
 
-```powershell
-psql -U postgres -h localhost -p 5432 -d mtg_deckbuilder -f .\server\schema.sql
-```
+## 🔍 Verification & Health Check
 
-6. Start the API and frontend together:
-
-```powershell
-npm start
-```
-
-Open the local URL printed by Vite, usually `http://localhost:5173`.
-
-To confirm that the API can reach PostgreSQL, open this URL in a browser:
-
-```text
-http://localhost:3001/api/health
-```
-
-It should return:
+Visit `http://localhost:3001/api/health` in your browser. When connected to Neon, it returns:
 
 ```json
-{"ok":true}
+{
+  "ok": true,
+  "status": "online",
+  "service": "ArcaneForge MTG Deckbuilder API",
+  "storageMode": "PostgreSQL (Neon Serverless Cloud)",
+  "tables": ["users", "cards", "decks", "deck_cards"],
+  "savedDecksCount": 1,
+  "cachedCardsCount": 35
+}
 ```
 
-## Available scripts
+---
 
-- `npm run dev` — start the Vite development server.
-- `npm run api` — start the Node/PostgreSQL API.
-- `npm start` — start the API and Vite frontend together.
-- `npm run build` — create a production frontend build.
-- `npm run lint` — run Oxlint.
-- `npm run preview` — preview the production frontend build.
+## 🎓 Presentation Queries for Neon SQL Editor
+
+During grading or project presentations, open Neon's online **SQL Editor** tab to showcase relational database concepts:
+
+### Query 1: Many-to-Many Relational Join
+```sql
+SELECT d.name AS deck, dc.zone, dc.quantity, c.name AS card, c.mana_cost, c.cmc
+FROM deck_cards dc
+JOIN decks d ON d.id = dc.deck_id
+JOIN cards c ON c.scryfall_id = dc.card_id
+ORDER BY d.name, dc.zone, c.name;
+```
+
+### Query 2: Most Popular Cards Across All Decks
+```sql
+SELECT c.name, COUNT(DISTINCT dc.deck_id) AS deck_count, SUM(dc.quantity) AS total_copies
+FROM deck_cards dc
+JOIN cards c ON c.scryfall_id = dc.card_id
+GROUP BY c.name
+ORDER BY deck_count DESC;
+```
+
+### Query 3: Average Converted Mana Cost (CMC) per Deck
+```sql
+SELECT d.name, ROUND(AVG(c.cmc), 2) AS avg_cmc
+FROM deck_cards dc
+JOIN decks d ON d.id = dc.deck_id
+JOIN cards c ON c.scryfall_id = dc.card_id
+WHERE c.type_line NOT LIKE '%Land%'
+GROUP BY d.id;
+```
+
+---
+
+## Available Scripts
+
+- `npm.cmd start` — runs backend API (port 3001) and Vite frontend concurrently.
+- `npm.cmd run dev` — runs frontend dev server only.
+- `npm.cmd run api` — runs backend API only.
+- `npm.cmd run build` — builds frontend for production.
+- `npm.cmd run lint` — runs Oxlint.
