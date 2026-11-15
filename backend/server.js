@@ -22,6 +22,26 @@ const PORT = Number(process.env.PORT || 3001);
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 
+// Ensure database schema is initialized on serverless environments (Vercel)
+let dbInitPromise = null;
+function ensureDbReady() {
+  if (!pool) return Promise.resolve();
+  if (!dbInitPromise) {
+    dbInitPromise = initDatabase().catch((err) => {
+      dbInitPromise = null;
+      console.error('Database initialization error:', err.message);
+    });
+  }
+  return dbInitPromise;
+}
+
+app.use(async (_req, _res, next) => {
+  if (pool) {
+    await ensureDbReady();
+  }
+  next();
+});
+
 // Default demo user ID for out-of-the-box local testing & grading presentations
 const DEMO_USER_ID = 'a0000000-0000-0000-0000-000000000001';
 const DEMO_USER = {
@@ -802,20 +822,24 @@ app.post('/api/decks/parse', (req, res) => {
 // ============================================================================
 // 10. SERVER STARTUP & DATABASE INITIALIZATION
 // ============================================================================
-app.listen(PORT, async () => {
-  console.log(`\n============================================================`);
-  console.log(`🔥 ArcaneForge Backend API running on http://localhost:${PORT}`);
-  console.log(`🔍 Health check: http://localhost:${PORT}/api/health`);
-  console.log(`============================================================`);
+if (!process.env.VERCEL) {
+  app.listen(PORT, async () => {
+    console.log(`\n============================================================`);
+    console.log(`🔥 ArcaneForge Backend API running on http://localhost:${PORT}`);
+    console.log(`🔍 Health check: http://localhost:${PORT}/api/health`);
+    console.log(`============================================================`);
 
-  if (pool) {
-    console.log('⚡ Connecting to Neon PostgreSQL...');
-    try {
-      await initDatabase();
-    } catch (err) {
-      console.error('❌ Failed to initialize Neon PostgreSQL on startup:', err.message);
+    if (pool) {
+      console.log('⚡ Connecting to Neon PostgreSQL...');
+      try {
+        await initDatabase();
+      } catch (err) {
+        console.error('❌ Failed to initialize Neon PostgreSQL on startup:', err.message);
+      }
+    } else {
+      console.log('ℹ️  No DATABASE_URL configured in .env. Using temporary file store.');
     }
-  } else {
-    console.log('ℹ️  No DATABASE_URL configured in .env. Using temporary file store.');
-  }
-});
+  });
+}
+
+export default app;
